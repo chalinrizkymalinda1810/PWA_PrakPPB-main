@@ -70,8 +70,9 @@ apiClient.interceptors.response.use(
       message = error.message || message
     }
 
+    const safeMessage = typeof message === 'string' ? message : 'An unexpected error occurred'
     return Promise.reject({
-      message,
+      message: safeMessage,
       status,
       code: error.response?.data?.code,
       raw: error.response?.data,
