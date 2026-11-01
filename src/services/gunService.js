@@ -20,11 +20,7 @@ export const normalizeProduct = (item) => {
             quantity: s.substring(colonIndex + 1).trim(),
           }
         }
-        return {
-          id: `spec-${idx}`,
-          name: 'Specification',
-          quantity: s.trim(),
-        }
+        return { id: `spec-${idx}`, name: 'Specification', quantity: s.trim() }
       }
       return s
     })
@@ -36,7 +32,18 @@ export const normalizeProduct = (item) => {
   const stepsList =
     Array.isArray(item.steps) && item.steps.length > 0
       ? item.steps
-      : ['Verify firearm is completely unloaded and point in safe direction.', 'Inspect receiver and mechanism for maintenance.']
+      : [
+          'Verify firearm is completely unloaded and point in safe direction.',
+          'Inspect receiver and mechanism for maintenance.',
+        ]
+
+  // Resolve images array
+  const imagesList =
+    Array.isArray(item.images) && item.images.length > 0
+      ? item.images
+      : item.image_url || item.image
+      ? [item.image_url || item.image]
+      : []
 
   return {
     ...item,
@@ -49,8 +56,10 @@ export const normalizeProduct = (item) => {
     description: item.description || '',
     image_url: item.image_url || item.image || '/guns/pistol.svg',
     image: item.image_url || item.image || '/guns/pistol.svg',
+    images: imagesList,
     ingredients: specsList,
     steps: stepsList,
+    is_archived: item.is_archived || false,
   }
 }
 
@@ -62,42 +71,75 @@ export const normalizeProduct = (item) => {
 class GunService {
   /**
    * Fetch a paginated, filterable list of products.
+   * @param {Object} params — optional: { search, category, sort_by, order, limit, offset, page, archived }
    */
   async getGuns(params = {}) {
     if (IS_SUPABASE) {
-      const queryParts = ['select=*']
-
-      if (params.search) {
-        queryParts.push(`name=ilike.*${encodeURIComponent(params.search)}*`)
+      const buildQuery = (includeArchivedFilter = true) => {
+        const queryParts = ['select=*']
+        if (includeArchivedFilter) {
+          if (!params.archived) {
+            queryParts.push('is_archived=eq.false')
+          } else {
+            queryParts.push('is_archived=eq.true')
+          }
+        }
+        if (params.search) {
+          queryParts.push(`name=ilike.*${encodeURIComponent(params.search)}*`)
+        }
+        if (params.category && params.category !== 'All') {
+          queryParts.push(`type=eq.${encodeURIComponent(params.category)}`)
+        }
+        if (params.sort_by) {
+          const order = params.order === 'desc' ? 'desc' : 'asc'
+          queryParts.push(`order=${encodeURIComponent(params.sort_by)}.${order}`)
+        } else {
+          queryParts.push('order=created_at.desc')
+        }
+        if (params.limit) {
+          queryParts.push(`limit=${params.limit}`)
+        }
+        if (typeof params.offset === 'number') {
+          queryParts.push(`offset=${params.offset}`)
+        }
+        return queryParts.join('&')
       }
 
-      if (params.category && params.category !== 'All') {
-        queryParts.push(`type=eq.${encodeURIComponent(params.category)}`)
-      }
-
-      if (params.sort_by) {
-        const order = params.order === 'desc' ? 'desc' : 'asc'
-        queryParts.push(`order=${encodeURIComponent(params.sort_by)}.${order}`)
-      } else {
-        queryParts.push('order=created_at.desc')
-      }
-
-      if (params.limit) {
-        queryParts.push(`limit=${params.limit}`)
-      }
-
-      const queryString = queryParts.join('&')
-      const data = await apiClient.get(`/rest/v1/products?${queryString}`)
-      const list = Array.isArray(data) ? data.map(normalizeProduct) : []
-
-      return {
-        success: true,
-        data: list,
-        pagination: {
-          total: list.length,
-          page: params.page || 1,
-          limit: params.limit || 50,
-        },
+      try {
+        const data = await apiClient.get(`/rest/v1/products?${buildQuery(true)}`, {
+          headers: { Prefer: 'count=exact' },
+        })
+        const list = Array.isArray(data) ? data.map(normalizeProduct) : []
+        return {
+          success: true,
+          data: list,
+          pagination: {
+            total: list.length,
+            page: params.page || 1,
+            limit: params.limit || 12,
+          },
+        }
+      } catch (err) {
+        // If column is_archived does not exist yet in Supabase, retry without that filter
+        if (params.archived) {
+          // If asking for archived items and column doesn't exist, return empty
+          return { success: true, data: [] }
+        }
+        try {
+          const fallbackData = await apiClient.get(`/rest/v1/products?${buildQuery(false)}`)
+          const list = Array.isArray(fallbackData) ? fallbackData.map(normalizeProduct) : []
+          return {
+            success: true,
+            data: list,
+            pagination: {
+              total: list.length,
+              page: params.page || 1,
+              limit: params.limit || 12,
+            },
+          }
+        } catch {
+          throw err
+        }
       }
     }
 
@@ -106,6 +148,24 @@ class GunService {
       Object.entries(params).filter(([, v]) => v !== '' && v != null),
     )
     return apiClient.get('/api/v1/recipes', { params: clean })
+  }
+
+  /**
+   * Count total non-archived products (for pagination).
+   */
+  async countGuns(params = {}) {
+    if (!IS_SUPABASE) return 0
+    try {
+      const queryParts = ['select=id']
+      if (!params.archived) queryParts.push('is_archived=eq.false')
+      else queryParts.push('is_archived=eq.true')
+      if (params.search) queryParts.push(`name=ilike.*${encodeURIComponent(params.search)}*`)
+      if (params.category && params.category !== 'All') {
+        queryParts.push(`type=eq.${encodeURIComponent(params.category)}`)
+      }
+      const data = await apiClient.get(`/rest/v1/products?${queryParts.join('&')}`)
+      return Array.isArray(data) ? data.length : 0
+    } catch { return 0 }
   }
 
   /**
@@ -133,14 +193,18 @@ class GunService {
         ? data.specs
         : []
 
+      const imagesArray = Array.isArray(data.images) ? data.images : []
+
       const payload = {
         name: data.name,
-        type: data.type || (data.category === 'minuman' ? 'Rifle' : 'Pistol'),
+        type: data.type || 'Pistol',
         caliber: data.caliber || '9mm',
         price: Number(data.price ?? data.cook_time ?? 0),
         description: data.description || '',
         specs: specsArray,
-        image_url: data.image_url || null,
+        images: imagesArray,
+        image_url: imagesArray[0] || data.image_url || null,
+        is_archived: false,
       }
 
       const res = await apiClient.post('/rest/v1/products', payload, {
@@ -163,9 +227,7 @@ class GunService {
         ? data.specs
         : undefined
 
-      const payload = {
-        updated_at: new Date().toISOString(),
-      }
+      const payload = { updated_at: new Date().toISOString() }
       if (data.name !== undefined) payload.name = data.name
       if (data.type !== undefined) payload.type = data.type
       if (data.caliber !== undefined) payload.caliber = data.caliber
@@ -174,7 +236,12 @@ class GunService {
       }
       if (data.description !== undefined) payload.description = data.description
       if (specsArray !== undefined) payload.specs = specsArray
-      if (data.image_url !== undefined) payload.image_url = data.image_url
+      if (Array.isArray(data.images)) {
+        payload.images = data.images
+        payload.image_url = data.images[0] || null
+      } else if (data.image_url !== undefined) {
+        payload.image_url = data.image_url
+      }
 
       const res = await apiClient.patch(`/rest/v1/products?id=eq.${id}`, payload, {
         headers: { Prefer: 'return=representation' },
@@ -185,19 +252,39 @@ class GunService {
     return apiClient.put(`/api/v1/recipes/${id}`, data)
   }
 
-  /**
-   * Partial update (PATCH).
-   */
+  /** Partial update (PATCH). */
   async patchGun(id, data) {
-    if (IS_SUPABASE) {
-      return this.updateGun(id, data)
-    }
+    if (IS_SUPABASE) return this.updateGun(id, data)
     return apiClient.patch(`/api/v1/recipes/${id}`, data)
   }
 
-  /**
-   * Delete product.
-   */
+  /** Soft-delete (archive) a product. */
+  async archiveGun(id) {
+    if (IS_SUPABASE) {
+      await apiClient.patch(
+        `/rest/v1/products?id=eq.${id}`,
+        { is_archived: true, updated_at: new Date().toISOString() },
+        { headers: { Prefer: 'return=minimal' } }
+      )
+      return { success: true }
+    }
+    return this.deleteGun(id)
+  }
+
+  /** Restore an archived product. */
+  async restoreGun(id) {
+    if (IS_SUPABASE) {
+      await apiClient.patch(
+        `/rest/v1/products?id=eq.${id}`,
+        { is_archived: false, updated_at: new Date().toISOString() },
+        { headers: { Prefer: 'return=minimal' } }
+      )
+      return { success: true }
+    }
+    return { success: false, message: 'Restore not supported.' }
+  }
+
+  /** Permanently delete a product (hard delete). */
   async deleteGun(id) {
     if (IS_SUPABASE) {
       await apiClient.delete(`/rest/v1/products?id=eq.${id}`)

@@ -1,21 +1,26 @@
-import { Plus } from 'lucide-react'
+import { Plus, ShoppingCart, Heart, User, Shield } from 'lucide-react'
 import { useFavorites } from '../hooks/useFavorites'
+import { useCart } from '../hooks/useCart'
 
 const NAV_ITEMS = [
   { id: 'Catalog', label: 'Catalog' },
-  { id: 'Favorites', label: 'Favorites', hasBadge: true },
+  { id: 'Cart', label: 'Cart', isCart: true },
+  { id: 'Favorites', label: 'Favorites', isFav: true },
   { id: 'Profile', label: 'Profile' },
-  { id: 'About', label: 'About' },
-  { id: 'Contact', label: 'Contact' },
 ]
 
 function Header({ tab, onTab, onNavigateCreate }) {
   const { favorites } = useFavorites()
+  const { totalCount: cartCount } = useCart()
   const favCount = favorites ? favorites.length : 0
 
   return (
     <header className="header">
-      <div className="header-brand-wrap" onClick={() => onTab('Catalog')} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}>
+      <div
+        className="header-brand-wrap"
+        onClick={() => onTab('Catalog')}
+        style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}
+      >
         <div className="header-logo-badge">
           <img src="/logo.png" alt="Bore & Barrel" />
         </div>
@@ -30,8 +35,15 @@ function Header({ tab, onTab, onNavigateCreate }) {
             className={tab === item.id ? 'nav-link active' : 'nav-link'}
             onClick={() => onTab(item.id)}
           >
+            {item.isCart && <ShoppingCart size={15} style={{ marginRight: '4px' }} />}
+            {item.isFav && <Heart size={15} style={{ marginRight: '4px' }} />}
+            {item.id === 'Profile' && <User size={15} style={{ marginRight: '4px' }} />}
             {item.label}
-            {item.hasBadge && favCount > 0 && (
+
+            {item.isCart && cartCount > 0 && (
+              <span className="nav-badge nav-badge--cart">{cartCount}</span>
+            )}
+            {item.isFav && favCount > 0 && (
               <span className="nav-badge">{favCount}</span>
             )}
           </button>

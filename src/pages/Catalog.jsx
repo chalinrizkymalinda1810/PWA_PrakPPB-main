@@ -1,5 +1,15 @@
-import { useState, useMemo } from 'react'
-import { RefreshCw, Plus, Loader, AlertCircle, PackageOpen } from 'lucide-react'
+import { useState, useMemo, useEffect } from 'react'
+import {
+  RefreshCw,
+  Plus,
+  Loader,
+  AlertCircle,
+  PackageOpen,
+  ChevronLeft,
+  ChevronRight,
+  Archive,
+  Check,
+} from 'lucide-react'
 import { useGuns } from '../hooks/useGuns'
 import GUNS_LOCAL from '../data/guns'
 import GunCard from '../components/gun/GunCard'
@@ -15,23 +25,21 @@ import {
 } from '../utils/helpers'
 
 /**
- * Catalog page — the main product listing.
- *
- * Data source priority:
- *   1. Live API via useGuns()
- *   2. Local static array (GUNS_LOCAL) when the API is unreachable
- *
- * Features: search, category filter, sort, CRUD actions, detail modal.
+ * Catalog page with:
+ * 1. Pagination (Requirement #1)
+ * 2. Soft-delete / Archive (Requirement #6)
+ * 3. Share link button via GunCard (Requirement #2)
+ * 4. Lazy loading support (Requirement #3)
  */
-export default function Catalog({ onNavigate }) {
+export default function Catalog({ onNavigate, initialGunId }) {
   // ---- API data ----
-  const { guns: apiGuns, loading, error, refetch } = useGuns({ limit: 50 })
+  const { guns: apiGuns, loading, error, refetch } = useGuns({ limit: 100 })
   const [useLocal, setUseLocal] = useState(false)
+  const [feedback, setFeedback] = useState('')
 
   // Decide data source
   const rawGuns = useMemo(() => {
     if (useLocal || (error && apiGuns.length === 0)) {
-      // Enrich local data with synthetic ids so FavoriteButton and detail work
       return GUNS_LOCAL.map((g, i) => ({ ...g, id: g.id || `local-${i}` }))
     }
     return apiGuns
@@ -43,6 +51,10 @@ export default function Catalog({ onNavigate }) {
   const [sortKey, setSortKey] = useState('name')
   const [sortOrder, setSortOrder] = useState('asc')
 
+  // ---- PAGINATION (Requirement #1) ----
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(6) // 6 items per page fits 3-col grid nicely
+
   const categories = useMemo(() => extractCategories(rawGuns), [rawGuns])
 
   const filteredGuns = useMemo(() => {
@@ -52,26 +64,72 @@ export default function Catalog({ onNavigate }) {
     return sortItems(result, sortKey, sortOrder)
   }, [rawGuns, search, activeCategory, sortKey, sortOrder])
 
+  // Reset page on search or filter change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [search, activeCategory, sortKey, sortOrder, pageSize])
+
+  const totalPages = Math.max(1, Math.ceil(filteredGuns.length / pageSize))
+  const paginatedGuns = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return filteredGuns.slice(start, start + pageSize)
+  }, [filteredGuns, currentPage, pageSize])
+
   // ---- detail view ----
   const [selectedGun, setSelectedGun] = useState(null)
 
-  // ---- delete ----
-  const [deleteTarget, setDeleteTarget] = useState(null)
-  const [deleting, setDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState('')
+  // Open initial gun if requested via unique link (Requirement #2)
+  useEffect(() => {
+    if (initialGunId && rawGuns.length > 0) {
+      const match = rawGuns.find((g) => String(g.id) === String(initialGunId))
+      if (match) setSelectedGun(match)
+    }
+  }, [initialGunId, rawGuns])
 
-  const handleDelete = async () => {
+  // ---- Delete / Archive modals (Requirement #6) ----
+  const [archiveTarget, setArchiveTarget] = useState(null)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [actionLoading, setActionLoading] = useState(false)
+
+  // Soft delete / archive
+  const handleArchiveConfirm = async () => {
+    if (!archiveTarget) return
+    try {
+      setActionLoading(true)
+      await gunService.archiveGun(archiveTarget.id)
+      setFeedback(`"${archiveTarget.name}" berhasil diarsipkan (soft delete).`)
+      setTimeout(() => setFeedback(''), 4000)
+      setArchiveTarget(null)
+      refetch()
+    } catch (err) {
+      alert('Gagal mengarsipkan: ' + err.message)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  // Hard delete
+  const handleDeleteConfirm = async () => {
     if (!deleteTarget) return
     try {
-      setDeleting(true)
-      setDeleteError('')
+      setActionLoading(true)
       await gunService.deleteGun(deleteTarget.id)
+      setFeedback(`"${deleteTarget.name}" telah dihapus permanen.`)
+      setTimeout(() => setFeedback(''), 4000)
       setDeleteTarget(null)
       refetch()
     } catch (err) {
-      setDeleteError(err.message || 'Failed to delete.')
+      alert('Gagal menghapus: ' + err.message)
     } finally {
-      setDeleting(false)
+      setActionLoading(false)
+    }
+  }
+
+  const handlePageChange = (newPage) => {
+    setCurrentPage(newPage)
+    const stockElem = document.getElementById('catalog-stock-list')
+    if (stockElem) {
+      stockElem.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }
 
@@ -82,14 +140,26 @@ export default function Catalog({ onNavigate }) {
         gun={selectedGun}
         onBack={() => setSelectedGun(null)}
         onEdit={(g) => onNavigate && onNavigate('Edit', g)}
-        onDelete={(g) => { setSelectedGun(null); setDeleteTarget(g) }}
+        onArchive={(g) => {
+          setSelectedGun(null)
+          setArchiveTarget(g)
+        }}
+        onDelete={(g) => {
+          setSelectedGun(null)
+          setDeleteTarget(g)
+        }}
       />
     )
   }
 
-  // ---- Main catalog view ----
   return (
     <>
+      {feedback && (
+        <div className="toast toast--success">
+          <Check size={18} /> {feedback}
+        </div>
+      )}
+
       <section className="masthead">
         <h1 className="display">Hardware, by the spec sheet.</h1>
         <p className="lede">
@@ -98,7 +168,7 @@ export default function Catalog({ onNavigate }) {
         </p>
       </section>
 
-      <section>
+      <section id="catalog-stock-list">
         <div className="list-head">
           <h2>Current stock</h2>
           <div className="list-head-right">
@@ -111,7 +181,7 @@ export default function Catalog({ onNavigate }) {
                 className="btn btn--primary btn--sm"
                 onClick={() => onNavigate('Create')}
               >
-                <Plus size={16} /> Add
+                <Plus size={16} /> Add Hardware
               </button>
             )}
           </div>
@@ -126,7 +196,10 @@ export default function Catalog({ onNavigate }) {
           onCategory={setActiveCategory}
           sortKey={sortKey}
           sortOrder={sortOrder}
-          onSort={({ key, order }) => { setSortKey(key); setSortOrder(order) }}
+          onSort={({ key, order }) => {
+            setSortKey(key)
+            setSortOrder(order)
+          }}
         />
 
         {/* States */}
@@ -163,19 +236,98 @@ export default function Catalog({ onNavigate }) {
           </div>
         )}
 
-        {/* Product grid */}
+        {/* Product grid with Pagination */}
         {filteredGuns.length > 0 && (
-          <ul className="stock">
-            {filteredGuns.map((gun) => (
-              <GunCard
-                key={gun.id || gun.name}
-                gun={gun}
-                onSelect={setSelectedGun}
-                onEdit={onNavigate ? (g) => onNavigate('Edit', g) : undefined}
-                onDelete={setDeleteTarget}
-              />
-            ))}
-          </ul>
+          <>
+            <ul className="stock">
+              {paginatedGuns.map((gun) => (
+                <GunCard
+                  key={gun.id || gun.name}
+                  gun={gun}
+                  onSelect={setSelectedGun}
+                  onEdit={onNavigate ? (g) => onNavigate('Edit', g) : undefined}
+                  onArchive={(g) => setArchiveTarget(g)}
+                  onDelete={(g) => setDeleteTarget(g)}
+                />
+              ))}
+            </ul>
+
+            {/* PAGINATION CONTROLS BAR (Requirement #1) */}
+            <div className="pagination-wrapper">
+              <div className="pagination-info">
+                Showing{' '}
+                <strong>
+                  {Math.min((currentPage - 1) * pageSize + 1, filteredGuns.length)}–
+                  {Math.min(currentPage * pageSize, filteredGuns.length)}
+                </strong>{' '}
+                of <strong>{filteredGuns.length}</strong> items
+              </div>
+
+              <div className="pagination-buttons">
+                <button
+                  type="button"
+                  className="page-nav-btn"
+                  onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
+                  disabled={currentPage === 1}
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft size={16} /> Prev
+                </button>
+
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((num) => {
+                  // If lots of pages, show current, first, last, and neighbors
+                  if (
+                    num === 1 ||
+                    num === totalPages ||
+                    (num >= currentPage - 1 && num <= currentPage + 1)
+                  ) {
+                    return (
+                      <button
+                        key={num}
+                        type="button"
+                        className={`page-num-btn ${num === currentPage ? 'active' : ''}`}
+                        onClick={() => handlePageChange(num)}
+                      >
+                        {num}
+                      </button>
+                    )
+                  }
+                  if (num === currentPage - 2 || num === currentPage + 2) {
+                    return (
+                      <span key={num} className="page-ellipsis">
+                        …
+                      </span>
+                    )
+                  }
+                  return null
+                })}
+
+                <button
+                  type="button"
+                  className="page-nav-btn"
+                  onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
+                  disabled={currentPage === totalPages}
+                  aria-label="Next page"
+                >
+                  Next <ChevronRight size={16} />
+                </button>
+              </div>
+
+              <div className="pagination-size">
+                <label htmlFor="page-size-select">Per page:</label>
+                <select
+                  id="page-size-select"
+                  className="page-size-select"
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                >
+                  <option value={6}>6</option>
+                  <option value={12}>12</option>
+                  <option value={24}>24</option>
+                </select>
+              </div>
+            </div>
+          </>
         )}
 
         {useLocal && (
@@ -184,7 +336,10 @@ export default function Catalog({ onNavigate }) {
             <button
               type="button"
               className="link-btn"
-              onClick={() => { setUseLocal(false); refetch() }}
+              onClick={() => {
+                setUseLocal(false)
+                refetch()
+              }}
             >
               Retry server
             </button>
@@ -192,20 +347,29 @@ export default function Catalog({ onNavigate }) {
         )}
       </section>
 
-      {/* Delete confirmation */}
+      {/* Archive (Soft-delete) Modal */}
       <ConfirmModal
-        open={!!deleteTarget}
-        title="Delete Product"
-        message={`Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone.`}
-        confirmLabel="Delete"
-        danger
-        loading={deleting}
-        onConfirm={handleDelete}
-        onCancel={() => { setDeleteTarget(null); setDeleteError('') }}
+        open={Boolean(archiveTarget)}
+        title="Arsipkan Senjata (Soft Delete)"
+        message={`Apakah Anda ingin mengarsipkan "${archiveTarget?.name}"? Item ini akan dipindahkan ke section Draft & Arsip di Profile, dan dapat di-restore kapan saja.`}
+        confirmLabel="Arsipkan"
+        danger={false}
+        loading={actionLoading}
+        onConfirm={handleArchiveConfirm}
+        onCancel={() => setArchiveTarget(null)}
       />
-      {deleteError && (
-        <div className="toast toast--error">{deleteError}</div>
-      )}
+
+      {/* Permanent Delete Modal */}
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title="Delete Permanen"
+        message={`Apakah Anda yakin ingin menghapus permanen "${deleteTarget?.name}"? Tindakan ini tidak dapat dibatalkan.`}
+        confirmLabel="Delete Permanen"
+        danger
+        loading={actionLoading}
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </>
   )
 }

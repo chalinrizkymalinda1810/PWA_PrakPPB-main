@@ -49,6 +49,8 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
   const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
   const [uploading, setUploading] = useState(false)
+  const [imagesList, setImagesList] = useState([])
+  const [customImageUrl, setCustomImageUrl] = useState('')
 
   // Specs & Steps
   const [specs, setSpecs] = useState([{ name: '', quantity: '' }])
@@ -88,7 +90,11 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
             servings: data.servings || 1,
             is_featured: Boolean(data.is_featured),
           })
-          setCurrentImageUrl(data.image_url || data.image || '/guns/pistol.svg')
+          const initImages = Array.isArray(data.images) && data.images.length > 0
+            ? data.images
+            : (data.image_url || data.image ? [data.image_url || data.image] : ['/guns/pistol.svg'])
+          setCurrentImageUrl(initImages[0] || '/guns/pistol.svg')
+          setImagesList(initImages)
 
           if (data.ingredients && data.ingredients.length > 0) {
             setSpecs(data.ingredients.map((ing) => ({
@@ -234,6 +240,34 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
     setSteps((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const handleAddCustomImage = (url) => {
+    if (!url || !url.trim()) return
+    const clean = url.trim()
+    setImagesList((prev) => (prev.includes(clean) ? prev : [...prev, clean]))
+    if (!currentImageUrl) setCurrentImageUrl(clean)
+    setCustomImageUrl('')
+  }
+
+  const handleRemoveImageItem = (index) => {
+    setImagesList((prev) => {
+      const next = prev.filter((_, i) => i !== index)
+      if (currentImageUrl === prev[index]) {
+        setCurrentImageUrl(next[0] || '')
+      }
+      return next
+    })
+  }
+
+  const handleSetPrimaryImage = (index) => {
+    setImagesList((prev) => {
+      const selected = prev[index]
+      const rest = prev.filter((_, i) => i !== index)
+      const next = [selected, ...rest]
+      setCurrentImageUrl(selected)
+      return next
+    })
+  }
+
   // Submit update
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -265,6 +299,14 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
       return
     }
 
+    const allImages = imagesList.length > 0
+      ? imagesList
+      : imagePreview
+      ? [imagePreview]
+      : currentImageUrl
+      ? [currentImageUrl]
+      : ['/guns/pistol.svg']
+
     const payload = {
       name: formData.name.trim(),
       type: formData.type || (formData.category === 'minuman' ? 'Rifle' : 'Pistol'),
@@ -272,7 +314,8 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
       price: Number(formData.price) || 500,
       category: formData.category || 'makanan',
       description: formData.description.trim() || `${formData.type} caliber ${formData.caliber}.`,
-      image_url: imagePreview || currentImageUrl || '/guns/pistol.svg',
+      image_url: allImages[0] || '/guns/pistol.svg',
+      images: allImages,
       prep_time: 15,
       cook_time: Number(formData.price) || 500,
       servings: Number(formData.servings) || 1,
@@ -492,6 +535,102 @@ export default function EditGunPage({ gun, gunId, onBack, onSuccess }) {
             rows={3}
             className="form-textarea"
           />
+        </div>
+
+        {/* Multiple Weapon Photos & Imagery (Requirement #9) */}
+        <div className="form-fieldset">
+          <div className="fieldset-header">
+            <label className="form-label">
+              Weapon Gallery &amp; Photos ({imagesList.length} photo{imagesList.length !== 1 ? 's' : ''})
+            </label>
+            <span className="badge badge--brass">Multi-Image Support</span>
+          </div>
+          <p className="card-box-desc" style={{ marginBottom: '10px' }}>
+            Tiap katalog bisa memiliki lebih dari 1 gambar. Gambar pertama adalah foto sampul utama.
+          </p>
+
+          {/* List of current images */}
+          {imagesList.length > 0 && (
+            <div className="multi-images-preview-grid">
+              {imagesList.map((imgUrl, idx) => (
+                <div key={idx} className={`multi-image-card ${idx === 0 ? 'is-primary' : ''}`}>
+                  <img src={imgUrl} alt={`Preview ${idx + 1}`} />
+                  <div className="multi-image-card-bar">
+                    {idx === 0 ? (
+                      <span className="primary-pill">Primary</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-set-primary"
+                        onClick={() => handleSetPrimaryImage(idx)}
+                        title="Set as primary cover photo"
+                      >
+                        Make Primary
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn-del-img"
+                      onClick={() => handleRemoveImageItem(idx)}
+                      title="Remove image"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add more images row */}
+          <div className="add-img-row">
+            <input
+              type="url"
+              className="form-input"
+              placeholder="Paste direct image URL (e.g. https://... or /guns/rifle.svg)"
+              value={customImageUrl}
+              onChange={(e) => setCustomImageUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleAddCustomImage(customImageUrl)
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn--outline btn--sm"
+              onClick={() => handleAddCustomImage(customImageUrl)}
+            >
+              <Plus size={14} /> Add Image URL
+            </button>
+          </div>
+
+          {/* Quick Presets */}
+          <div className="preset-quick-add">
+            <span>Quick add preset:</span>
+            <button
+              type="button"
+              className="pill pill--sm"
+              onClick={() => handleAddCustomImage('/guns/pistol.svg')}
+            >
+              + Pistol
+            </button>
+            <button
+              type="button"
+              className="pill pill--sm"
+              onClick={() => handleAddCustomImage('/guns/rifle.svg')}
+            >
+              + Rifle
+            </button>
+            <button
+              type="button"
+              className="pill pill--sm"
+              onClick={() => handleAddCustomImage('/guns/shotgun.svg')}
+            >
+              + Shotgun
+            </button>
+          </div>
         </div>
 
         {/* Specs */}

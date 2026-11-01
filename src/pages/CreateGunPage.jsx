@@ -44,6 +44,8 @@ export default function CreateGunPage({ onBack, onSuccess }) {
   const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
   const [uploadedImageUrl, setUploadedImageUrl] = useState('')
+  const [imagesList, setImagesList] = useState([])
+  const [customImageUrl, setCustomImageUrl] = useState('')
 
   // Specifications (ingredients in API)
   const [specs, setSpecs] = useState([
@@ -73,6 +75,7 @@ export default function CreateGunPage({ onBack, onSuccess }) {
       specs,
       steps,
       uploadedImageUrl,
+      imagesList,
     }
     const saved = saveDraft(draftData, 'create')
     if (saved) {
@@ -145,6 +148,7 @@ export default function CreateGunPage({ onBack, onSuccess }) {
     setImageFile(null)
     setImagePreview(url)
     setUploadedImageUrl(url)
+    setImagesList((prev) => (prev.includes(url) ? prev : [...prev, url]))
     setCurrentStep('form')
     setError('')
   }
@@ -152,8 +156,8 @@ export default function CreateGunPage({ onBack, onSuccess }) {
   // Upload image to server
   const handleUploadImage = async () => {
     if (!imageFile) {
-      // If user already previewed a preset or entered a url, advance to form
       if (uploadedImageUrl) {
+        setImagesList((prev) => (prev.includes(uploadedImageUrl) ? prev : [...prev, uploadedImageUrl]))
         setCurrentStep('form')
         return
       }
@@ -167,18 +171,48 @@ export default function CreateGunPage({ onBack, onSuccess }) {
       const result = await uploadService.uploadImage(imageFile)
       if (result.success && result.data?.url) {
         setUploadedImageUrl(result.data.url)
+        setImagesList((prev) => (prev.includes(result.data.url) ? prev : [...prev, result.data.url]))
         setCurrentStep('form')
       } else {
         throw new Error(result.message || 'Image upload failed.')
       }
     } catch (err) {
       console.warn('Upload API failed, falling back to local preview:', err)
-      // Allow fallback to image preview so the user can continue even if MinIO bucket is unreachable
-      setUploadedImageUrl(imagePreview || '/guns/pistol.svg')
+      const fallbackUrl = imagePreview || '/guns/pistol.svg'
+      setUploadedImageUrl(fallbackUrl)
+      setImagesList((prev) => (prev.includes(fallbackUrl) ? prev : [...prev, fallbackUrl]))
       setCurrentStep('form')
     } finally {
       setUploading(false)
     }
+  }
+
+  const handleAddCustomImage = (url) => {
+    if (!url || !url.trim()) return
+    const clean = url.trim()
+    setImagesList((prev) => (prev.includes(clean) ? prev : [...prev, clean]))
+    if (!uploadedImageUrl) setUploadedImageUrl(clean)
+    setCustomImageUrl('')
+  }
+
+  const handleRemoveImageItem = (index) => {
+    setImagesList((prev) => {
+      const next = prev.filter((_, i) => i !== index)
+      if (uploadedImageUrl === prev[index]) {
+        setUploadedImageUrl(next[0] || '')
+      }
+      return next
+    })
+  }
+
+  const handleSetPrimaryImage = (index) => {
+    setImagesList((prev) => {
+      const selected = prev[index]
+      const rest = prev.filter((_, i) => i !== index)
+      const next = [selected, ...rest]
+      setUploadedImageUrl(selected)
+      return next
+    })
   }
 
   const handleFormChange = (e) => {
@@ -256,12 +290,21 @@ export default function CreateGunPage({ onBack, onSuccess }) {
       return
     }
 
+    const allImages = imagesList.length > 0
+      ? imagesList
+      : uploadedImageUrl
+      ? [uploadedImageUrl]
+      : ['/guns/pistol.svg']
+
     // Prepare payload compliant with backend /api/v1/recipes schema
     const payload = {
       name: formData.name.trim(),
+      type: formData.type || 'Pistol',
+      caliber: formData.caliber || '9mm',
       category: formData.category || 'makanan',
       description: formData.description.trim() || `${formData.type} caliber ${formData.caliber}.`,
-      image_url: uploadedImageUrl || '/guns/pistol.svg',
+      image_url: allImages[0] || '/guns/pistol.svg',
+      images: allImages,
       prep_time: 15,
       cook_time: Number(formData.price) || 500, // Price stored in cook_time
       servings: Number(formData.servings) || 1,
@@ -572,6 +615,102 @@ export default function CreateGunPage({ onBack, onSuccess }) {
               rows={3}
               className="form-textarea"
             />
+          </div>
+
+          {/* Multiple Weapon Photos & Imagery (Requirement #9) */}
+          <div className="form-fieldset">
+            <div className="fieldset-header">
+              <label className="form-label">
+                Weapon Gallery &amp; Photos ({imagesList.length} photo{imagesList.length !== 1 ? 's' : ''})
+              </label>
+              <span className="badge badge--brass">Multi-Image Support</span>
+            </div>
+            <p className="card-box-desc" style={{ marginBottom: '10px' }}>
+              Tiap katalog bisa menambahkan lebih dari 1 gambar. Gambar pertama akan menjadi cover utama.
+            </p>
+
+            {/* List of current images */}
+            {imagesList.length > 0 && (
+              <div className="multi-images-preview-grid">
+                {imagesList.map((imgUrl, idx) => (
+                  <div key={idx} className={`multi-image-card ${idx === 0 ? 'is-primary' : ''}`}>
+                    <img src={imgUrl} alt={`Preview ${idx + 1}`} />
+                    <div className="multi-image-card-bar">
+                      {idx === 0 ? (
+                        <span className="primary-pill">Primary</span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn-set-primary"
+                          onClick={() => handleSetPrimaryImage(idx)}
+                          title="Set as primary cover photo"
+                        >
+                          Make Primary
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn-del-img"
+                        onClick={() => handleRemoveImageItem(idx)}
+                        title="Remove image"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add more images row */}
+            <div className="add-img-row">
+              <input
+                type="url"
+                className="form-input"
+                placeholder="Paste direct image URL (e.g. https://... or /guns/rifle.svg)"
+                value={customImageUrl}
+                onChange={(e) => setCustomImageUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleAddCustomImage(customImageUrl)
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn--outline btn--sm"
+                onClick={() => handleAddCustomImage(customImageUrl)}
+              >
+                <Plus size={14} /> Add Image URL
+              </button>
+            </div>
+
+            {/* Quick Presets */}
+            <div className="preset-quick-add">
+              <span>Quick add preset:</span>
+              <button
+                type="button"
+                className="pill pill--sm"
+                onClick={() => handleAddCustomImage('/guns/pistol.svg')}
+              >
+                + Pistol
+              </button>
+              <button
+                type="button"
+                className="pill pill--sm"
+                onClick={() => handleAddCustomImage('/guns/rifle.svg')}
+              >
+                + Rifle
+              </button>
+              <button
+                type="button"
+                className="pill pill--sm"
+                onClick={() => handleAddCustomImage('/guns/shotgun.svg')}
+              >
+                + Shotgun
+              </button>
+            </div>
           </div>
 
           {/* Specifications (Ingredients) */}

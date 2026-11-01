@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import reviewService from '../services/reviewService'
+import { getUserIdentifier } from '../services/userService'
 
 // ---------------------------------------------------------------------------
-// useReviews — fetch reviews for a specific product.
+// useReviews — fetch reviews for a specific product, supporting CRUD and votes.
 // ---------------------------------------------------------------------------
 
 export function useReviews(gunId) {
   const [reviews, setReviews] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const userId = getUserIdentifier()
 
   const fetchReviews = useCallback(async () => {
     if (!gunId) {
@@ -19,7 +21,7 @@ export function useReviews(gunId) {
       setLoading(true)
       setError(null)
 
-      const response = await reviewService.getReviews(gunId)
+      const response = await reviewService.getReviews(gunId, userId)
 
       if (response.success) {
         setReviews(response.data || [])
@@ -32,13 +34,30 @@ export function useReviews(gunId) {
     } finally {
       setLoading(false)
     }
-  }, [gunId])
+  }, [gunId, userId])
 
   useEffect(() => {
     fetchReviews()
   }, [fetchReviews])
 
-  return { reviews, loading, error, refetch: fetchReviews }
+  const voteReview = async (reviewId, voteVal) => {
+    await reviewService.voteReview(reviewId, userId, voteVal)
+    await fetchReviews()
+  }
+
+  const updateReview = async (reviewId, data) => {
+    const res = await reviewService.updateReview(reviewId, data)
+    await fetchReviews()
+    return res
+  }
+
+  const deleteReview = async (reviewId) => {
+    const res = await reviewService.deleteReview(reviewId)
+    await fetchReviews()
+    return res
+  }
+
+  return { reviews, loading, error, refetch: fetchReviews, voteReview, updateReview, deleteReview }
 }
 
 // ---------------------------------------------------------------------------
