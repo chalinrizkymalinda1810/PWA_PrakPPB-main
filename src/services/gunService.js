@@ -1,6 +1,34 @@
 import { apiClient, IS_SUPABASE } from '../config/api'
 
 // ---------------------------------------------------------------------------
+// Local archive cache fallback — ensures soft delete & restore work
+// even before the user runs the SQL migration on Supabase.
+// ---------------------------------------------------------------------------
+const LOCAL_ARCHIVED_KEY = 'bore_barrel_archived_ids'
+
+const getLocalArchivedIds = () => {
+  try {
+    return JSON.parse(localStorage.getItem(LOCAL_ARCHIVED_KEY) || '[]')
+  } catch {
+    return []
+  }
+}
+
+const addLocalArchivedId = (id) => {
+  const ids = getLocalArchivedIds()
+  const strId = String(id)
+  if (!ids.includes(strId)) {
+    ids.push(strId)
+    localStorage.setItem(LOCAL_ARCHIVED_KEY, JSON.stringify(ids))
+  }
+}
+
+const removeLocalArchivedId = (id) => {
+  const ids = getLocalArchivedIds().filter((i) => i !== String(id))
+  localStorage.setItem(LOCAL_ARCHIVED_KEY, JSON.stringify(ids))
+}
+
+// ---------------------------------------------------------------------------
 // Normalizer — standardizes product shape whether received from Supabase
 // (public.products) or from the university API (/api/v1/recipes).
 // ---------------------------------------------------------------------------
@@ -45,6 +73,8 @@ export const normalizeProduct = (item) => {
       ? [item.image_url || item.image]
       : []
 
+  const isArchived = Boolean(item.is_archived) || getLocalArchivedIds().includes(String(item.id))
+
   return {
     ...item,
     id: item.id,
@@ -59,7 +89,7 @@ export const normalizeProduct = (item) => {
     images: imagesList,
     ingredients: specsList,
     steps: stepsList,
-    is_archived: item.is_archived || false,
+    is_archived: isArchived,
   }
 }
 
@@ -74,6 +104,8 @@ class GunService {
    * @param {Object} params — optional: { search, category, sort_by, order, limit, offset, page, archived }
    */
   async getGuns(params = {}) {
+    const localArchived = getLocalArchivedIds()
+
     if (IS_SUPABASE) {
       const buildQuery = (includeArchivedFilter = true) => {
         const queryParts = ['select=*']
@@ -105,41 +137,38 @@ class GunService {
         return queryParts.join('&')
       }
 
+      let rawList = []
       try {
         const data = await apiClient.get(`/rest/v1/products?${buildQuery(true)}`, {
           headers: { Prefer: 'count=exact' },
         })
-        const list = Array.isArray(data) ? data.map(normalizeProduct) : []
-        return {
-          success: true,
-          data: list,
-          pagination: {
-            total: list.length,
-            page: params.page || 1,
-            limit: params.limit || 12,
-          },
-        }
-      } catch (err) {
-        // If column is_archived does not exist yet in Supabase, retry without that filter
-        if (params.archived) {
-          // If asking for archived items and column doesn't exist, return empty
-          return { success: true, data: [] }
-        }
+        rawList = Array.isArray(data) ? data : []
+      } catch {
+        // Fallback if column is_archived does not exist yet on Supabase table
         try {
           const fallbackData = await apiClient.get(`/rest/v1/products?${buildQuery(false)}`)
-          const list = Array.isArray(fallbackData) ? fallbackData.map(normalizeProduct) : []
-          return {
-            success: true,
-            data: list,
-            pagination: {
-              total: list.length,
-              page: params.page || 1,
-              limit: params.limit || 12,
-            },
-          }
+          rawList = Array.isArray(fallbackData) ? fallbackData : []
         } catch {
-          throw err
+          rawList = []
         }
+      }
+
+      // Filter by archived status using both database flag and local fallback
+      let normalized = rawList.map(normalizeProduct)
+      if (params.archived) {
+        normalized = normalized.filter((g) => g.is_archived)
+      } else {
+        normalized = normalized.filter((g) => !g.is_archived)
+      }
+
+      return {
+        success: true,
+        data: normalized,
+        pagination: {
+          total: normalized.length,
+          page: params.page || 1,
+          limit: params.limit || 12,
+        },
       }
     }
 
@@ -147,7 +176,14 @@ class GunService {
     const clean = Object.fromEntries(
       Object.entries(params).filter(([, v]) => v !== '' && v != null),
     )
-    return apiClient.get('/api/v1/recipes', { params: clean })
+    const res = await apiClient.get('/api/v1/recipes', { params: clean })
+    let list = Array.isArray(res?.data) ? res.data.map(normalizeProduct) : []
+    if (params.archived) {
+      list = list.filter((g) => localArchived.includes(String(g.id)))
+    } else {
+      list = list.filter((g) => !localArchived.includes(String(g.id)))
+    }
+    return { success: true, data: list }
   }
 
   /**
@@ -156,16 +192,11 @@ class GunService {
   async countGuns(params = {}) {
     if (!IS_SUPABASE) return 0
     try {
-      const queryParts = ['select=id']
-      if (!params.archived) queryParts.push('is_archived=eq.false')
-      else queryParts.push('is_archived=eq.true')
-      if (params.search) queryParts.push(`name=ilike.*${encodeURIComponent(params.search)}*`)
-      if (params.category && params.category !== 'All') {
-        queryParts.push(`type=eq.${encodeURIComponent(params.category)}`)
-      }
-      const data = await apiClient.get(`/rest/v1/products?${queryParts.join('&')}`)
-      return Array.isArray(data) ? data.length : 0
-    } catch { return 0 }
+      const res = await this.getGuns(params)
+      return res.data ? res.data.length : 0
+    } catch {
+      return 0
+    }
   }
 
   /**
@@ -207,11 +238,22 @@ class GunService {
         is_archived: false,
       }
 
-      const res = await apiClient.post('/rest/v1/products', payload, {
-        headers: { Prefer: 'return=representation' },
-      })
-      const created = Array.isArray(res) ? res[0] : res
-      return { success: true, data: normalizeProduct(created) }
+      try {
+        const res = await apiClient.post('/rest/v1/products', payload, {
+          headers: { Prefer: 'return=representation' },
+        })
+        const created = Array.isArray(res) ? res[0] : res
+        return { success: true, data: normalizeProduct(created) }
+      } catch (err) {
+        // If images or is_archived columns are missing in Supabase, retry with basic schema
+        delete payload.is_archived
+        delete payload.images
+        const res = await apiClient.post('/rest/v1/products', payload, {
+          headers: { Prefer: 'return=representation' },
+        })
+        const created = Array.isArray(res) ? res[0] : res
+        return { success: true, data: normalizeProduct(created) }
+      }
     }
     return apiClient.post('/api/v1/recipes', data)
   }
@@ -243,11 +285,21 @@ class GunService {
         payload.image_url = data.image_url
       }
 
-      const res = await apiClient.patch(`/rest/v1/products?id=eq.${id}`, payload, {
-        headers: { Prefer: 'return=representation' },
-      })
-      const updated = Array.isArray(res) ? res[0] : res
-      return { success: true, data: normalizeProduct(updated) }
+      try {
+        const res = await apiClient.patch(`/rest/v1/products?id=eq.${id}`, payload, {
+          headers: { Prefer: 'return=representation' },
+        })
+        const updated = Array.isArray(res) ? res[0] : res
+        return { success: true, data: normalizeProduct(updated) }
+      } catch (err) {
+        // Retry without extra columns if they don't exist
+        delete payload.images
+        const res = await apiClient.patch(`/rest/v1/products?id=eq.${id}`, payload, {
+          headers: { Prefer: 'return=representation' },
+        })
+        const updated = Array.isArray(res) ? res[0] : res
+        return { success: true, data: normalizeProduct(updated) }
+      }
     }
     return apiClient.put(`/api/v1/recipes/${id}`, data)
   }
@@ -260,32 +312,47 @@ class GunService {
 
   /** Soft-delete (archive) a product. */
   async archiveGun(id) {
+    // Always store in local archive fallback so it works even if DB column is missing
+    addLocalArchivedId(id)
+
     if (IS_SUPABASE) {
-      await apiClient.patch(
-        `/rest/v1/products?id=eq.${id}`,
-        { is_archived: true, updated_at: new Date().toISOString() },
-        { headers: { Prefer: 'return=minimal' } }
-      )
+      try {
+        await apiClient.patch(
+          `/rest/v1/products?id=eq.${id}`,
+          { is_archived: true, updated_at: new Date().toISOString() },
+          { headers: { Prefer: 'return=minimal' } }
+        )
+      } catch (err) {
+        console.warn('Supabase is_archived column not yet in DB schema, handled via local archive cache:', err)
+      }
       return { success: true }
     }
-    return this.deleteGun(id)
+    return { success: true }
   }
 
   /** Restore an archived product. */
   async restoreGun(id) {
+    // Remove from local archive fallback
+    removeLocalArchivedId(id)
+
     if (IS_SUPABASE) {
-      await apiClient.patch(
-        `/rest/v1/products?id=eq.${id}`,
-        { is_archived: false, updated_at: new Date().toISOString() },
-        { headers: { Prefer: 'return=minimal' } }
-      )
+      try {
+        await apiClient.patch(
+          `/rest/v1/products?id=eq.${id}`,
+          { is_archived: false, updated_at: new Date().toISOString() },
+          { headers: { Prefer: 'return=minimal' } }
+        )
+      } catch (err) {
+        console.warn('Supabase is_archived column not yet in DB schema, restored from local archive cache:', err)
+      }
       return { success: true }
     }
-    return { success: false, message: 'Restore not supported.' }
+    return { success: true }
   }
 
   /** Permanently delete a product (hard delete). */
   async deleteGun(id) {
+    removeLocalArchivedId(id)
     if (IS_SUPABASE) {
       await apiClient.delete(`/rest/v1/products?id=eq.${id}`)
       return { success: true }

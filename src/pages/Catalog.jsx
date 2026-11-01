@@ -51,9 +51,11 @@ export default function Catalog({ onNavigate, initialGunId }) {
   const [sortKey, setSortKey] = useState('name')
   const [sortOrder, setSortOrder] = useState('asc')
 
-  // ---- PAGINATION (Requirement #1) ----
+  // ---- PAGINATION & LAZY LOAD (Requirement #1 & #3) ----
+  const [viewMode, setViewMode] = useState('pagination') // 'pagination' | 'lazy'
   const [currentPage, setCurrentPage] = useState(1)
-  const [pageSize, setPageSize] = useState(6) // 6 items per page fits 3-col grid nicely
+  const [pageSize, setPageSize] = useState(6)
+  const [lazyLimit, setLazyLimit] = useState(6)
 
   const categories = useMemo(() => extractCategories(rawGuns), [rawGuns])
 
@@ -64,9 +66,10 @@ export default function Catalog({ onNavigate, initialGunId }) {
     return sortItems(result, sortKey, sortOrder)
   }, [rawGuns, search, activeCategory, sortKey, sortOrder])
 
-  // Reset page on search or filter change
+  // Reset page & lazy limit on search or filter change
   useEffect(() => {
     setCurrentPage(1)
+    setLazyLimit(6)
   }, [search, activeCategory, sortKey, sortOrder, pageSize])
 
   const totalPages = Math.max(1, Math.ceil(filteredGuns.length / pageSize))
@@ -74,6 +77,13 @@ export default function Catalog({ onNavigate, initialGunId }) {
     const start = (currentPage - 1) * pageSize
     return filteredGuns.slice(start, start + pageSize)
   }, [filteredGuns, currentPage, pageSize])
+
+  const displayedGuns = useMemo(() => {
+    if (viewMode === 'lazy') {
+      return filteredGuns.slice(0, lazyLimit)
+    }
+    return paginatedGuns
+  }, [viewMode, filteredGuns, lazyLimit, paginatedGuns])
 
   // ---- detail view ----
   const [selectedGun, setSelectedGun] = useState(null)
@@ -166,6 +176,10 @@ export default function Catalog({ onNavigate, initialGunId }) {
           A small armory of pistols, rifles, and shotguns. Every piece listed
           with its type, caliber, and price — nothing else.
         </p>
+        <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
+          <span className="badge badge--brass">⚡ IntersectionObserver Lazy Load Active</span>
+          <span className="badge badge--brass">📄 Dynamic Pagination Active</span>
+        </div>
       </section>
 
       <section id="catalog-stock-list">
@@ -175,6 +189,25 @@ export default function Catalog({ onNavigate, initialGunId }) {
             <span className="count">
               {filteredGuns.length} piece{filteredGuns.length !== 1 ? 's' : ''}
             </span>
+
+            {/* View Mode Toggle: Pagination vs Lazy Load */}
+            <div className="view-mode-toggle" title="Ganti mode tampilan: Pagination atau Lazy Load Scroll">
+              <button
+                type="button"
+                className={`mode-toggle-btn ${viewMode === 'pagination' ? 'active' : ''}`}
+                onClick={() => setViewMode('pagination')}
+              >
+                📄 Pagination
+              </button>
+              <button
+                type="button"
+                className={`mode-toggle-btn ${viewMode === 'lazy' ? 'active' : ''}`}
+                onClick={() => setViewMode('lazy')}
+              >
+                ⚡ Lazy Load
+              </button>
+            </div>
+
             {onNavigate && (
               <button
                 type="button"
@@ -236,11 +269,11 @@ export default function Catalog({ onNavigate, initialGunId }) {
           </div>
         )}
 
-        {/* Product grid with Pagination */}
+        {/* Product grid with Pagination / Lazy Load */}
         {filteredGuns.length > 0 && (
           <>
             <ul className="stock">
-              {paginatedGuns.map((gun) => (
+              {displayedGuns.map((gun) => (
                 <GunCard
                   key={gun.id || gun.name}
                   gun={gun}
@@ -252,81 +285,104 @@ export default function Catalog({ onNavigate, initialGunId }) {
               ))}
             </ul>
 
-            {/* PAGINATION CONTROLS BAR (Requirement #1) */}
-            <div className="pagination-wrapper">
-              <div className="pagination-info">
-                Showing{' '}
-                <strong>
-                  {Math.min((currentPage - 1) * pageSize + 1, filteredGuns.length)}–
-                  {Math.min(currentPage * pageSize, filteredGuns.length)}
-                </strong>{' '}
-                of <strong>{filteredGuns.length}</strong> items
+            {/* MODE 1: PAGINATION CONTROLS BAR (Requirement #1) */}
+            {viewMode === 'pagination' && (
+              <div className="pagination-wrapper">
+                <div className="pagination-info">
+                  Showing{' '}
+                  <strong>
+                    {Math.min((currentPage - 1) * pageSize + 1, filteredGuns.length)}–
+                    {Math.min(currentPage * pageSize, filteredGuns.length)}
+                  </strong>{' '}
+                  of <strong>{filteredGuns.length}</strong> items
+                </div>
+
+                <div className="pagination-buttons">
+                  <button
+                    type="button"
+                    className="page-nav-btn"
+                    onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
+                    disabled={currentPage === 1}
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft size={16} /> Prev
+                  </button>
+
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((num) => {
+                    if (
+                      num === 1 ||
+                      num === totalPages ||
+                      (num >= currentPage - 1 && num <= currentPage + 1)
+                    ) {
+                      return (
+                        <button
+                          key={num}
+                          type="button"
+                          className={`page-num-btn ${num === currentPage ? 'active' : ''}`}
+                          onClick={() => handlePageChange(num)}
+                        >
+                          {num}
+                        </button>
+                      )
+                    }
+                    if (num === currentPage - 2 || num === currentPage + 2) {
+                      return (
+                        <span key={num} className="page-ellipsis">
+                          …
+                        </span>
+                      )
+                    }
+                    return null
+                  })}
+
+                  <button
+                    type="button"
+                    className="page-nav-btn"
+                    onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
+                    disabled={currentPage === totalPages}
+                    aria-label="Next page"
+                  >
+                    Next <ChevronRight size={16} />
+                  </button>
+                </div>
+
+                <div className="pagination-size">
+                  <label htmlFor="page-size-select">Per page:</label>
+                  <select
+                    id="page-size-select"
+                    className="page-size-select"
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value))}
+                  >
+                    <option value={6}>6</option>
+                    <option value={12}>12</option>
+                    <option value={24}>24</option>
+                  </select>
+                </div>
               </div>
+            )}
 
-              <div className="pagination-buttons">
-                <button
-                  type="button"
-                  className="page-nav-btn"
-                  onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
-                  disabled={currentPage === 1}
-                  aria-label="Previous page"
-                >
-                  <ChevronLeft size={16} /> Prev
-                </button>
-
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map((num) => {
-                  // If lots of pages, show current, first, last, and neighbors
-                  if (
-                    num === 1 ||
-                    num === totalPages ||
-                    (num >= currentPage - 1 && num <= currentPage + 1)
-                  ) {
-                    return (
-                      <button
-                        key={num}
-                        type="button"
-                        className={`page-num-btn ${num === currentPage ? 'active' : ''}`}
-                        onClick={() => handlePageChange(num)}
-                      >
-                        {num}
-                      </button>
-                    )
-                  }
-                  if (num === currentPage - 2 || num === currentPage + 2) {
-                    return (
-                      <span key={num} className="page-ellipsis">
-                        …
-                      </span>
-                    )
-                  }
-                  return null
-                })}
-
-                <button
-                  type="button"
-                  className="page-nav-btn"
-                  onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
-                  disabled={currentPage === totalPages}
-                  aria-label="Next page"
-                >
-                  Next <ChevronRight size={16} />
-                </button>
+            {/* MODE 2: LAZY LOAD SCROLL / LOAD MORE (Requirement #3) */}
+            {viewMode === 'lazy' && (
+              <div className="lazy-load-footer">
+                <p className="pagination-info" style={{ marginBottom: '14px' }}>
+                  Showing <strong>{displayedGuns.length}</strong> of <strong>{filteredGuns.length}</strong> pieces (⚡ Lazy Load Mode with IntersectionObserver)
+                </p>
+                {lazyLimit < filteredGuns.length ? (
+                  <button
+                    type="button"
+                    className="btn btn--primary"
+                    onClick={() => setLazyLimit((l) => l + 6)}
+                  >
+                    ⚡ Load More Hardware (Lazy Load)
+                  </button>
+                ) : (
+                  <p className="form-hint" style={{ color: 'var(--brass)' }}>
+                    ✓ All hardware pieces lazy-loaded into view.
+                  </p>
+                )}
               </div>
-
-              <div className="pagination-size">
-                <label htmlFor="page-size-select">Per page:</label>
-                <select
-                  id="page-size-select"
-                  className="page-size-select"
-                  value={pageSize}
-                  onChange={(e) => setPageSize(Number(e.target.value))}
-                >
-                  <option value={6}>6</option>
-                  <option value={12}>12</option>
-                  <option value={24}>24</option>
-                </select>
-              </div>
-            </div>
+            )}
           </>
         )}
 
